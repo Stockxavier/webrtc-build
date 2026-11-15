@@ -1,0 +1,26 @@
+# Whisperly: builds the non-prefixed Android AAR for one ABI with the
+# OnRemoveStream guard patch. AAR only; the static libwebrtc.a step is skipped.
+FROM ubuntu:24.04
+
+ARG ARCHS="arm64-v8a"
+
+COPY run.py /root/
+COPY VERSION /root/
+COPY .gclient /root/
+COPY patches/ /root/patches/
+COPY scripts/ /root/scripts/
+COPY android/ /root/android/
+RUN /root/scripts/apt_install_x86_64.sh \
+  && sudo apt-get install -y openjdk-11-jdk \
+  && sudo apt-get install -y build-essential
+ENV LC_ALL=C.UTF-8
+ENV WHISPERLY_ANDROID_ARCHS="${ARCHS}"
+RUN cd /root && python3 run.py build android --webrtc-nobuild \
+  && mkdir -p /out/unstripped \
+  && cp /root/_source/android/webrtc/src/out/aar/libwebrtc.aar /out/libwebrtc.aar \
+  && (cd /root/_source/android/webrtc/src/out/aar \
+      && find . -path '*lib.unstripped*' -name 'libjingle_peerconnection_so.so' \
+           -exec cp --parents {} /out/unstripped/ \; ) \
+  && (cd /root/_source/android/webrtc/src && git rev-parse HEAD > /out/webrtc-commit.txt \
+      && git diff --stat > /out/webrtc-diffstat.txt) \
+  && rm -rf /root/_source /root/_build

@@ -1,0 +1,32 @@
+--- a/sdk/android/src/jni/pc/peer_connection.cc
++++ b/sdk/android/src/jni/pc/peer_connection.cc
+@@ -425,8 +425,15 @@
+     scoped_refptr<MediaStreamInterface> stream) {
+   JNIEnv* env = AttachCurrentThreadIfNeeded();
+   NativeToJavaStreamsMap::iterator it = remote_streams_.find(stream.get());
+-  RTC_CHECK(it != remote_streams_.end())
+-      << "unexpected stream: " << stream.get();
++  if (it == remote_streams_.end()) {
++    // Whisperly: the core can report a legacy stream removal for a stream this
++    // observer no longer (or never) owned, e.g. a reused missing-msid fallback
++    // stream or two receivers sharing one track id. There is no Java wrapper
++    // to hand to onRemoveStream, and nothing to erase, so skip the callback
++    // instead of aborting the process.
++    RTC_LOG(LS_ERROR) << "OnRemoveStream ignored for untracked stream";
++    return;
++  }
+   Java_Observer_onRemoveStream(env, j_observer_global_,
+                                it->second.j_media_stream());
+   remote_streams_.erase(it);
+--- a/pc/sdp_offer_answer.cc
++++ b/pc/sdp_offer_answer.cc
+@@ -4919,6 +4919,9 @@
+         remote_stream->GetVideoTracks().empty()) {
+       remote_streams_->RemoveStream(remote_stream.get());
+       removed_streams->push_back(remote_stream);
++      if (remote_stream == missing_msid_default_stream_) {
++        missing_msid_default_stream_ = nullptr;
++      }
+     }
+   }
+ }

@@ -1,0 +1,86 @@
+name: whisperly-android-guard
+
+# Rebuilds libjingle_peerconnection_so.so for all four Android ABIs from
+# webrtc-sdk 144.7559.05 (6c1aa903) plus whisperly_remove_stream_guard.patch,
+# then places the four libraries into the stock Maven AAR so its Java classes
+# stay byte-identical.
+
+on:
+  workflow_dispatch:
+  # workflow_dispatch is only offered for workflows on the default branch,
+  # so a push to this branch also starts a run.
+  push:
+    branches:
+      - 'whisperly/**'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        abi: [armeabi-v7a, arm64-v8a, x86, x86_64]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache /usr/local/share/boost /usr/share/swift
+          sudo docker image prune -af
+          df -h /
+      - name: Build AAR for ${{ matrix.abi }}
+        working-directory: build
+        run: |
+          DOCKER_BUILDKIT=1 docker build -t whisperly-webrtc:${{ matrix.abi }} \
+            -f android/Dockerfile.whisperly --build-arg ARCHS=${{ matrix.abi }} .
+          id=$(docker container create whisperly-webrtc:${{ matrix.abi }})
+          docker container cp "$id":/out ./out
+          docker container rm "$id"
+          sha256sum out/libwebrtc.aar
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aar-${{ matrix.abi }}
+          path: build/out
+          retention-days: 14
+
+  assemble:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: parts
+      - name: Assemble guarded AAR from the stock Maven AAR
+        run: |
+          set -euo pipefail
+          STOCK_SHA=03d074e0e4e07866876f7d447b5ddb53caabefdcfae9f8ff95b15e2bff557a71
+          curl -fsSL -o stock.aar https://repo1.maven.org/maven2/io/github/webrtc-sdk/android/144.7559.05/android-144.7559.05.aar
+          echo "${STOCK_SHA}  stock.aar" | sha256sum -c -
+          mkdir stock && (cd stock && unzip -q ../stock.aar)
+          mkdir -p result/symbols
+          for abi in armeabi-v7a arm64-v8a x86 x86_64; do
+            mkdir -p "built-$abi" && (cd "built-$abi" && unzip -q "../parts/aar-$abi/libwebrtc.aar")
+            new="built-$abi/jni/$abi/libjingle_peerconnection_so.so"
+            test -f "$new"
+            echo "$abi stock $(sha256sum < stock/jni/$abi/libjingle_peerconnection_so.so | cut -d' ' -f1) $(stat -c %s stock/jni/$abi/libjingle_peerconnection_so.so)"
+            echo "$abi built $(sha256sum < $new | cut -d' ' -f1) $(stat -c %s $new)"
+            readelf -n "$new" | grep -i 'build id' || true
+            # 16 KiB page alignment of LOAD segments (64-bit ABIs)
+            readelf -lW "$new" | awk '$1=="LOAD"{print "LOAD align", $NF}' | sort -u
+            strings -a "$new" | grep -c 'OnRemoveStream ignored for untracked stream' || true
+            cp "$new" "stock/jni/$abi/libjingle_peerconnection_so.so"
+            mkdir -p "result/symbols/$abi"
+            find "parts/aar-$abi/unstripped" -name 'libjingle_peerconnection_so.so' -exec cp {} "result/symbols/$abi/" \; || true
+            cmp "built-$abi/classes.jar" stock/classes.jar && echo "$abi classes.jar identical to stock" || echo "$abi classes.jar differs from stock (stock kept)"
+          done
+          (cd stock && zip -q -r -X ../result/android-144.7559.05-whisperly-guard.aar .)
+          (cd result && sha256sum android-144.7559.05-whisperly-guard.aar > SHA256SUMS.txt && cat SHA256SUMS.txt)
+          cat parts/aar-arm64-v8a/webrtc-commit.txt parts/aar-arm64-v8a/webrtc-diffstat.txt | tee result/source.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: whisperly-guarded-aar
+          path: result
+          retention-days: 30

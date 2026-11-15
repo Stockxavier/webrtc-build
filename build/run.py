@@ -209,6 +209,7 @@ PATCHES = {
         'add_license_dav1d.patch',
         'android_webrtc_version.patch',
         'fix_mocks.patch',
+        'whisperly_remove_stream_guard.patch',
     ],
     'android_prefixed': [
         'add_license_dav1d.patch',
@@ -577,7 +578,8 @@ def build_webrtc_ios(
     cmd(['lipo', *libs, '-create', '-output', os.path.join(webrtc_build_dir, 'libwebrtc.a')])
 
 
-ANDROID_ARCHS = ['armeabi-v7a', 'arm64-v8a', 'x86_64', 'x86']
+# Whisperly: allow one ABI per CI job so each fits a hosted runner.
+ANDROID_ARCHS = os.environ.get('WHISPERLY_ANDROID_ARCHS', 'armeabi-v7a arm64-v8a x86_64 x86').split()
 ANDROID_TARGET_CPU = {
     'armeabi-v7a': 'arm',
     'arm64-v8a': 'arm64',
