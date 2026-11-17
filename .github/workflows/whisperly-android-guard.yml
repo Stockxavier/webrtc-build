@@ -1,8 +1,8 @@
 name: whisperly-android-guard
 
 # Rebuilds libjingle_peerconnection_so.so for all four Android ABIs from
-# webrtc-sdk 144.7559.05 (6c1aa903) plus whisperly_remove_stream_guard.patch and
-# whisperly_audio_record_restart_guard.patch, then places the four libraries into the stock Maven AAR.
+# webrtc-sdk 144.7559.05 (6c1aa903) plus whisperly_remove_stream_guard.patch,
+# whisperly_audio_record_restart_guard.patch and whisperly_network_poll_guard.patch, then places the four libraries into the stock Maven AAR.
 # Only the WebRtcAudioRecord classes are replaced; all other Java classes stay byte-identical.
 
 on:
@@ -71,6 +71,7 @@ jobs:
             # 16 KiB page alignment of LOAD segments (64-bit ABIs)
             readelf -lW "$new" | awk '$1=="LOAD"{print "LOAD align", $NF}' | sort -u
             strings -a "$new" | grep -c 'OnRemoveStream ignored for untracked stream' || true
+            strings -a "$new" | grep -c 'Periodic network polling skipped' || true
             cp "$new" "stock/jni/$abi/libjingle_peerconnection_so.so"
             mkdir -p "result/symbols/$abi"
             find "parts/aar-$abi/unstripped" -name 'libjingle_peerconnection_so.so' -exec cp {} "result/symbols/$abi/" \; || true
