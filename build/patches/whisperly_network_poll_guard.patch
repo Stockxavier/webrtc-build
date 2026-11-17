@@ -1,0 +1,19 @@
+--- a/rtc_base/network.cc
++++ b/rtc_base/network.cc
+@@ -1094,6 +1094,16 @@
+ 
+ void BasicNetworkManager::UpdateNetworksContinually() {
+   UpdateNetworksOnce();
++#if defined(WEBRTC_ANDROID)
++  // Whisperly: while a network monitor is running, network changes arrive
++  // through OnNetworksChanged(). The periodic interface listing is redundant
++  // then, and on some devices the netlink request blocks this thread (which
++  // also carries all media packets) for over a second each time.
++  if (network_monitor_) {
++    RTC_LOG(LS_INFO) << "Periodic network polling skipped: network monitor active";
++    return;
++  }
++#endif
+   thread_->PostDelayedTask(SafeTask(task_safety_flag_,
+                                     [this] {
+                                       RTC_DCHECK_RUN_ON(thread_);
