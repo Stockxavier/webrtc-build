@@ -210,6 +210,7 @@ PATCHES = {
         'android_webrtc_version.patch',
         'fix_mocks.patch',
         'whisperly_remove_stream_guard.patch',
+        'whisperly_audio_record_restart_guard.patch',
     ],
     'android_prefixed': [
         'add_license_dav1d.patch',

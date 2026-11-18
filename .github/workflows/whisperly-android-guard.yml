@@ -1,9 +1,9 @@
 name: whisperly-android-guard
 
 # Rebuilds libjingle_peerconnection_so.so for all four Android ABIs from
-# webrtc-sdk 144.7559.05 (6c1aa903) plus whisperly_remove_stream_guard.patch,
-# then places the four libraries into the stock Maven AAR so its Java classes
-# stay byte-identical.
+# webrtc-sdk 144.7559.05 (6c1aa903) plus whisperly_remove_stream_guard.patch and
+# whisperly_audio_record_restart_guard.patch, then places the four libraries into the stock Maven AAR.
+# Only the WebRtcAudioRecord classes are replaced; all other Java classes stay byte-identical.
 
 on:
   workflow_dispatch:
@@ -74,8 +74,22 @@ jobs:
             cp "$new" "stock/jni/$abi/libjingle_peerconnection_so.so"
             mkdir -p "result/symbols/$abi"
             find "parts/aar-$abi/unstripped" -name 'libjingle_peerconnection_so.so' -exec cp {} "result/symbols/$abi/" \; || true
-            cmp "built-$abi/classes.jar" stock/classes.jar && echo "$abi classes.jar identical to stock" || echo "$abi classes.jar differs from stock (stock kept)"
+            cmp "built-$abi/classes.jar" stock/classes.jar && echo "$abi classes.jar identical to stock" || echo "$abi classes.jar differs from stock"
           done
+          # whisperly_audio_record_restart_guard.patch is Java-only. Keep the stock classes.jar and
+          # replace just the WebRtcAudioRecord classes with the ones built from the patched source.
+          mkdir stock-classes built-classes
+          (cd stock-classes && unzip -q ../stock/classes.jar)
+          (cd built-classes && unzip -q ../built-arm64-v8a/classes.jar)
+          echo "entries that differ between the built and the stock jar:"
+          (diff -rq stock-classes built-classes || true) | sed 's/^/  /' | head -80
+          if cmp -s built-classes/org/webrtc/audio/WebRtcAudioRecord.class stock-classes/org/webrtc/audio/WebRtcAudioRecord.class; then echo "patched class is identical to stock"; exit 1; fi
+          for f in built-classes/org/webrtc/audio/WebRtcAudioRecord*.class; do
+            b=$(basename "$f")
+            if cmp -s "$f" "stock-classes/org/webrtc/audio/$b"; then echo "unchanged $b"; else echo "replaced  $b $(sha256sum < "$f" | cut -d' ' -f1)"; fi
+            cp "$f" "stock-classes/org/webrtc/audio/$b"
+          done
+          rm stock/classes.jar && (cd stock-classes && zip -q -r -X ../stock/classes.jar .)
           (cd stock && zip -q -r -X ../result/android-144.7559.05-whisperly-guard.aar .)
           (cd result && sha256sum android-144.7559.05-whisperly-guard.aar > SHA256SUMS.txt && cat SHA256SUMS.txt)
           cat parts/aar-arm64-v8a/webrtc-commit.txt parts/aar-arm64-v8a/webrtc-diffstat.txt | tee result/source.txt

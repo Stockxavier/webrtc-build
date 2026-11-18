@@ -1,0 +1,50 @@
+--- a/sdk/android/src/java/org/webrtc/audio/WebRtcAudioRecord.java
++++ b/sdk/android/src/java/org/webrtc/audio/WebRtcAudioRecord.java
+@@ -149,6 +149,10 @@
+       if (Build.VERSION.SDK_INT >= 24) {
+         audioTimestamp = new AudioTimestamp();
+       }
++      // Whisperly: remember the AudioRecord this thread reads from. If stopRecording() timed out
++      // joining this thread, the shared field may already point at the next session's AudioRecord,
++      // and stopping that one made the next thread fail its RECORDSTATE_RECORDING assertion.
++      AudioRecord ownedAudioRecord = WebRtcAudioRecord.this.audioRecord;
+       while (keepAlive) {
+         long captureTimeNs = 0;
+         AudioRecord audioRecord;
+@@ -157,6 +161,9 @@
+           audioRecord = WebRtcAudioRecord.this.audioRecord;
+           shouldReportData = nativeCalledInitRecording.get();
+         }
++        if (audioRecord != null) {
++          ownedAudioRecord = audioRecord;
++        }
+         
+         if (audioRecord == null && useAudioRecord) {
+           boolean result = initAudioRecord();
+@@ -249,8 +256,8 @@
+       }
+ 
+       try {
+-        if (audioRecord != null) {
+-          audioRecord.stop();
++        if (ownedAudioRecord != null) {
++          ownedAudioRecord.stop();
+         }
+       } catch (IllegalStateException e) {
+         Logging.e(TAG, "AudioRecord.stop failed: " + e.getMessage());
+@@ -563,7 +570,14 @@
+       synchronized(audioRecordStateLock) {
+         synchronized (audioThreadStateLock) {
+           if (audioThread == null) {
+-            return startRecordingImpl();
++            final boolean started = startRecordingImpl();
++            if (!started) {
++              // Whisperly: native keeps recording_ == false after a failed start and therefore
++              // never calls stopRecording(), so the flag would stay set and the next
++              // startRecording() would throw and abort the process in the JNI call context.
++              nativeCalledStartRecording.set(false);
++            }
++            return started;
+           }
+         }
+       }
