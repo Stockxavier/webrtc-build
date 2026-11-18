@@ -1,27 +1,39 @@
 --- a/sdk/android/src/java/org/webrtc/audio/WebRtcAudioRecord.java
 +++ b/sdk/android/src/java/org/webrtc/audio/WebRtcAudioRecord.java
-@@ -149,6 +149,10 @@
+@@ -149,6 +149,9 @@
        if (Build.VERSION.SDK_INT >= 24) {
          audioTimestamp = new AudioTimestamp();
        }
-+      // Whisperly: remember the AudioRecord this thread reads from. If stopRecording() timed out
-+      // joining this thread, the shared field may already point at the next session's AudioRecord,
-+      // and stopping that one made the next thread fail its RECORDSTATE_RECORDING assertion.
++      // Whisperly: the AudioRecord this thread reads from. The shared field may already belong to
++      // the next session when this thread leaves late, so the thread must only stop its own.
 +      AudioRecord ownedAudioRecord = WebRtcAudioRecord.this.audioRecord;
        while (keepAlive) {
          long captureTimeNs = 0;
          AudioRecord audioRecord;
-@@ -157,6 +161,9 @@
+@@ -157,6 +160,14 @@
            audioRecord = WebRtcAudioRecord.this.audioRecord;
            shouldReportData = nativeCalledInitRecording.get();
          }
++        // Whisperly: stopRecording() may have asked this thread to stop while it was waiting for
++        // the lock above. Going on would re-create and start an AudioRecord that nobody owns.
++        if (!keepAlive) {
++          break;
++        }
 +        if (audioRecord != null) {
 +          ownedAudioRecord = audioRecord;
 +        }
          
          if (audioRecord == null && useAudioRecord) {
            boolean result = initAudioRecord();
-@@ -249,8 +256,8 @@
+@@ -170,6 +181,7 @@
+             }
+ 
+             assertTrue(audioRecord != null);
++            ownedAudioRecord = audioRecord;
+             try {
+               audioRecord.startRecording();
+             } catch (IllegalStateException e) {
+@@ -249,13 +261,17 @@
        }
  
        try {
@@ -32,7 +44,16 @@
          }
        } catch (IllegalStateException e) {
          Logging.e(TAG, "AudioRecord.stop failed: " + e.getMessage());
-@@ -563,7 +570,14 @@
+       }
+       doAudioRecordStateCallback(AUDIO_RECORD_STOP);
++      // Whisperly: wake stopRecording(), which waits on this lock for the thread to finish.
++      synchronized (audioRecordStateLock) {
++        audioRecordStateLock.notifyAll();
++      }
+     }
+ 
+     // Stops the inner thread loop and also calls AudioRecord.stop().
+@@ -563,7 +579,14 @@
        synchronized(audioRecordStateLock) {
          synchronized (audioThreadStateLock) {
            if (audioThread == null) {
@@ -47,4 +68,33 @@
 +            return started;
            }
          }
+       }
+@@ -644,7 +667,27 @@
+         future = null;
+       }
+       audioThread.stopThread();
+-      if (!ThreadUtils.joinUninterruptibly(audioThread, AUDIO_RECORD_THREAD_JOIN_TIMEOUT_MS)) {
++      // Whisperly: the record thread takes audioRecordStateLock at the top of every loop
++      // iteration. Joining it while holding that lock made it wait for the whole timeout whenever
++      // it had just passed its keepAlive check. Object.wait() releases the lock while waiting.
++      final long joinDeadlineNs =
++          System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(AUDIO_RECORD_THREAD_JOIN_TIMEOUT_MS);
++      boolean interrupted = false;
++      while (audioThread.isAlive()) {
++        final long leftMs = TimeUnit.NANOSECONDS.toMillis(joinDeadlineNs - System.nanoTime());
++        if (leftMs <= 0) {
++          break;
++        }
++        try {
++          audioRecordStateLock.wait(Math.min(leftMs, 20));
++        } catch (InterruptedException e) {
++          interrupted = true;
++        }
++      }
++      if (interrupted) {
++        Thread.currentThread().interrupt();
++      }
++      if (audioThread.isAlive()) {
+         Logging.e(TAG, "Join of AudioRecordJavaThread timed out");
+         WebRtcAudioUtils.logAudioState(TAG, context, audioManager);
        }
